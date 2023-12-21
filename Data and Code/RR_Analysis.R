@@ -7,9 +7,10 @@
 
 
 
+
 ########## Load Data and Packages
 
-# Packages
+# Load Packages
 library(vroom) # Loading Data
 library(tidymodels) # Modeling and cross validation
 library(tidyverse) # Everything, really
@@ -24,35 +25,39 @@ library(workflows) # Workflows
 library(bonsai)
 library(lightgbm)
 
-# Data
+# Load Data
 train <- vroom('train.csv')
 test <- vroom('test.csv')
-turkey <- vroom('turkey.csv')
+turkey <- vroom('turkey.csv') # This data set does not come from the competition but may provide useful features
+
 
 
 
 
 ########## Clean and Merge
 
-# Assuming your data frame is named 'turkey'
+# Clean Up Turkish Cities Data
 turkey <- turkey %>%
-  # Remove redundant columns
+  # Remove geographic features
   select(-latitude, -longitude, -`plate code`) %>%
-  # Change column name 'city' to 'City'
+  # Change feature name 'city' to 'City'
   rename(City = city) %>%
-  # Remove dots in 'population' column and convert to numeric
+  # Remove dots in 'population' feature; convert to numeric
   mutate(population = as.numeric(gsub("\\.", "", population))) %>%
-  # Format 'per capita annual income' column
+  # Rename 'per capita annual income' feature so it doesn't include a line break
   rename(`per capita annual income` = "
 per capita annual income") %>%
+  # Remove dots and 'TL' from 'per capita annual income' feature; convert to numeric
   mutate(`per capita annual income` = as.numeric(gsub(" TL", "", gsub("\\.", "", `per capita annual income`)))) %>%
-  # Format 'number of people with higher education and above' column
+  # Shorten name of 'number of people with higher education and above' feature
   rename(`percentage w higher ed or more` = "number of people with higher education and above") %>%
+  # Remove % signs; convert to numeric
   mutate(`percentage w higher ed or more` = as.numeric(gsub("%", "", `percentage w higher ed or more`)))
 
-# Merge turkey dataset with training and testing data
+# Merge Turkey Dataset with Training and Testing Data on 'City'
 full_train <- merge(train, turkey, by = "City", all.x = TRUE)
 full_test <- merge(test, turkey, by = "City", all.x = TRUE)
+
 
 
 
@@ -142,7 +147,6 @@ table(full_test$Type)
 
 
 
-
 ########## Modeling: Linear Regression 1
 
 ##### Recipe
@@ -199,7 +203,7 @@ baked
 
 # Set up model
 linear_regression <- linear_reg() %>% # Type of model
-  set_engine("lm")# Engine = What R function to use--linear model here
+  set_engine("lm") # Engine = What R function to use--linear model here
 
 # Workflow
 wf <- workflow() %>% 
@@ -221,8 +225,7 @@ predictions <- bind_cols(full_test$Id,
     rename("Id" = "...1", "Prediction" = ".pred")# Rename columns
 
 # Write Predictions to .csv
-vroom_write(x=predictions, file="linear_regression_1_predictions.csv", delim = ",")
-
+# vroom_write(x=predictions, file="linear_regression_1_predictions.csv", delim = ",")
 
 
 
@@ -269,9 +272,9 @@ rec <- recipe(revenue ~ ., data = full_train) %>%
   step_normalize(all_numeric_predictors()) %>%
   # Remove zero-variance variables
   step_zv()%>%
-  # Remove correlated features
+  # Remove correlated features (> .85)
   step_corr(all_numeric_predictors(), threshold = 0.85) %>%
-  # PCR Threshold = .90
+  # PCR Threshold = .85
   step_pca(all_numeric_predictors(), threshold = .85)
                  
 # Prep, Bake, and View Recipe
@@ -283,11 +286,11 @@ baked
 ##### Modeling
 
 # Set up model
-penalized_linear_regression <- linear_reg(penalty = tune(),
+penalized_linear_regression <- linear_reg(penalty = tune(), # Tune penalty and mixture
                                           mixture = tune()) %>%
-  set_engine("glmnet")
+  set_engine("glmnet") # use the glmnet function
 
-# Workflow
+# Set Up Workflow
 wf <- workflow() %>% 
   add_recipe(rec) %>%
   add_model(penalized_linear_regression) %>%
@@ -296,10 +299,10 @@ wf <- workflow() %>%
 # Grid of values to tune over
 tg <- grid_regular(penalty(),
                          mixture(),
-                         levels = 20)
+                         levels = 20) # 20 levels to be really precise in tuning
 
 # Split data for cross-validation (CV)
-folds <- vfold_cv(full_train, v = 5, repeats = 1)
+folds <- vfold_cv(full_train, v = 5, repeats = 1) # 5 folds
 
 # Run cross-validation
 cv_results <- wf %>%
@@ -307,7 +310,7 @@ cv_results <- wf %>%
             grid = tg,
             metrics = metric_set(rmse))
 
-# Find best tuning parameters
+# Find best tuning parameters to minimize RMSE
 best_tune <- cv_results %>%
   select_best("rmse")
 
@@ -315,7 +318,6 @@ best_tune <- cv_results %>%
 final_wf <- wf %>%
   finalize_workflow(best_tune) %>%
   fit(data = full_train)
-
 
 # Look at fitted LM model
 extract_fit_engine(final_wf) %>%
@@ -331,7 +333,8 @@ predictions <- bind_cols(full_test$Id,
     rename("Id" = "...1", "Prediction" = ".pred")# Rename columns
 
 # Write Predictions to .csv
-vroom_write(x=predictions, file="penalized_linear_regression_1_predictions.csv", delim = ",")
+# vroom_write(x=predictions, file="penalized_linear_regression_1_predictions.csv", delim = ",")
+
 
 
 
@@ -390,13 +393,13 @@ head(baked, 3)
 ##### Modeling
 
 # Set up model
-random_forest <- rand_forest(mtry = tune(),
+random_forest <- rand_forest(mtry = tune(), # Tune mtry and min_n; keep trees at 1000
                               min_n = tune(),
-                              trees = 1000) %>% # Type of Model
-  set_engine("ranger") %>% # What R function to use
-  set_mode("regression")
+                              trees = 1000) %>%
+  set_engine("ranger") %>% # Use ranger function
+  set_mode("regression") # Regression bc the target variable is quantitative
 
-# Workflow
+# Set Up Workflow
 wf <- workflow() %>% 
   add_recipe(rec) %>%
   add_model(random_forest) %>%
@@ -408,7 +411,7 @@ tg <- grid_regular(mtry(range = c(1, 13)),
                             levels = 5)
 
 # Split data for cross-validation (CV)
-folds <- vfold_cv(full_train, v = 5, repeats = 1)
+folds <- vfold_cv(full_train, v = 5, repeats = 1) # 5 folds for CV
 
 # Run cross-validation
 cv_results <- wf %>%
@@ -416,7 +419,7 @@ cv_results <- wf %>%
             grid = tg,
             metrics = metric_set(rmse))
 
-# Find best tuning parameters
+# Find best tuning parameters to minimize RMSE
 best_tune <- cv_results %>%
   select_best("rmse")
 
@@ -433,7 +436,9 @@ predictions <- bind_cols(full_test$Id,
     rename("Id" = "...1", "Prediction" = ".pred")# Rename columns
 
 # Write Predictions to .csv
-vroom_write(x=predictions, file="random_forest_1_predictions.csv", delim = ",")
+# vroom_write(x=predictions, file="random_forest_1_predictions.csv", delim = ",")
+
+
 
 
 
@@ -478,9 +483,9 @@ rec <- recipe(revenue ~ ., data = full_train) %>%
   step_normalize(all_numeric_predictors()) %>%
   # Remove zero-variance variables
   step_zv()%>%
-  # Remove correlated features
+  # Remove correlated features (>,85)
   step_corr(all_numeric_predictors(), threshold = 0.85) %>%
-  # PCR Threshold = .90
+  # PCR Threshold = .85
   step_pca(all_numeric_predictors(), threshold = .85)
                  
 # Prep, Bake, and View Recipe
@@ -492,13 +497,13 @@ baked
 ##### Modeling
 
 # Set up model
-boosted_trees <- boost_tree(trees = 1000, 
+boosted_trees <- boost_tree(trees = 1000, # 1000 trees; Tune tree_depth and learn_rate
                        tree_depth = tune(), 
                        learn_rate = tune()) %>%
-  set_engine("lightgbm") %>%
-  set_mode("regression")
+  set_engine("lightgbm") %>% # Use lightgbm function
+  set_mode("regression") # Regression bc target variable is quantitative
 
-# Workflow
+# Set up Workflow
 wf <- workflow() %>%
   add_recipe(rec) %>%
   add_model(boosted_trees)
@@ -511,7 +516,7 @@ tg <- grid_regular(
 )
 
 # Split data for cross-validation (CV)
-folds <- vfold_cv(full_train, v = 5, repeats = 1)
+folds <- vfold_cv(full_train, v = 5, repeats = 1) # 5 splits
 
 # Run cross-validation
 cv_results <- wf %>%
@@ -519,7 +524,7 @@ cv_results <- wf %>%
             grid = tg,
             metrics = metric_set(rmse))
 
-# Find best tuning parameters
+# Find best tuning parameters to minimize RMSE
 best_tune <- cv_results %>%
   select_best("rmse")
 
@@ -536,7 +541,9 @@ predictions <- bind_cols(full_test$Id,
     rename("Id" = "...1", "Prediction" = ".pred")# Rename columns
 
 # Write Predictions to .csv
-vroom_write(x=predictions, file="boosted_trees_1_predictions.csv", delim = ",")
+# vroom_write(x=predictions, file="boosted_trees_1_predictions.csv", delim = ",")
+
+
 
 
 
@@ -581,9 +588,9 @@ rec <- recipe(revenue ~ ., data = full_train) %>%
   step_normalize(all_numeric_predictors()) %>%
   # Remove zero-variance variables
   step_zv()%>%
-  # Remove correlated features
+  # Remove correlated features (> .85)
   step_corr(all_numeric_predictors(), threshold = 0.85) %>%
-  # PCR Threshold = .90
+  # PCR Threshold = .85
   step_pca(all_numeric_predictors(), threshold = .85) %>%
   # Scale Xs to [0, 1]
   step_range(all_numeric_predictors(), min = 0, max = 1)
@@ -596,12 +603,12 @@ head(baked)
 ##### Modeling
 
 # Set up model
-neural_network <- mlp(hidden_units = tune(),
+neural_network <- mlp(hidden_units = tune(), # Tune hidden_units and epochs
                       epochs = tune()) %>%
-  set_engine("nnet") %>%
-  set_mode('regression')
+  set_engine("nnet") %>% # Use nnet function
+  set_mode('regression') # Regression bc target variable is quantitative
 
-# Workflow
+# Set Up Workflow
 wf <- workflow() %>%
   add_recipe(rec) %>%
   add_model(neural_network)
@@ -612,7 +619,7 @@ tg <- grid_regular(hidden_units(range = c(1, 10)),
                    levels = 10)
 
 # Split data for cross-validation (CV)
-folds <- vfold_cv(full_train, v = 5, repeats = 1)
+folds <- vfold_cv(full_train, v = 5, repeats = 1) # 5 folds for CV
 
 # Run cross-validation
 cv_results <- wf %>%
@@ -620,7 +627,7 @@ cv_results <- wf %>%
             grid = tg,
             metrics = metric_set(rmse))
 
-# Find best tuning parameters
+# Find best tuning parameters to minimize RMSE
 best_tune <- cv_results %>%
   select_best("rmse")
 ### Best: 2 hidden_units, 444 epochs
@@ -638,7 +645,8 @@ predictions <- bind_cols(full_test$Id,
     rename("Id" = "...1", "Prediction" = ".pred")# Rename columns
 
 # Write Predictions to .csv
-vroom_write(x=predictions, file="neural_network_1_predictions.csv", delim = ",")
+# vroom_write(x=predictions, file="neural_network_1_predictions.csv", delim = ",")
+
 
 
 
@@ -697,13 +705,13 @@ head(baked)
 ##### Modeling
 
 # Set up model
-gradient_boosted <- boost_tree(trees = 1000, 
+gradient_boosted <- boost_tree(trees = 1000, # Keep trees at 1000 and tune tree_depth and min_n
                                tree_depth = tune(), 
                                min_n = tune(), learn_rate = tune()) %>%
-  set_engine("xgboost") %>%
-  set_mode("regression")
+  set_engine("xgboost") %>% # Use xgboost function
+  set_mode("regression") # Regression bc target variable is quantitative
 
-# Workflow
+# Set Up Workflow
 wf <- workflow() %>%
   add_recipe(rec) %>%
   add_model(gradient_boosted)
@@ -718,7 +726,7 @@ tg <- grid_regular(
 
 
 # Split data for cross-validation (CV)
-folds <- vfold_cv(full_train, v = 5, repeats = 1)
+folds <- vfold_cv(full_train, v = 5, repeats = 1) # 5 folds for CV
 
 # Run cross-validation
 cv_results <- wf %>%
@@ -726,7 +734,7 @@ cv_results <- wf %>%
             grid = tg,
             metrics = metric_set(rmse))
 
-# Find best tuning parameters
+# Find best tuning parameters to minimize RMSE
 best_tune <- cv_results %>%
   select_best("rmse")
 # min_n = 1, tree_depth = 1, learn_rate = .01
@@ -744,7 +752,7 @@ predictions <- bind_cols(full_test$Id,
     rename("Id" = "...1", "Prediction" = ".pred")# Rename columns
 
 # Write Predictions to .csv
-vroom_write(x=predictions, file="gradient_boosted_trees_1_predictions.csv", delim = ",")
+# vroom_write(x=predictions, file="gradient_boosted_trees_1_predictions.csv", delim = ",")
 
 
 
@@ -791,7 +799,7 @@ rec <- recipe(revenue ~ ., data = full_train) %>%
   step_normalize(all_numeric_predictors()) %>%
   # Remove zero-variance variables
   step_zv()%>%
-  # Remove correlated features
+  # Remove correlated features above .90
   step_corr(all_numeric_predictors(), threshold = 0.90) %>%
   # PCR Threshold = .90
   step_pca(all_numeric_predictors(), threshold = .90)
@@ -804,13 +812,13 @@ head(baked)
 ##### Modeling
 
 # Set up model
-random_forest <- rand_forest(mtry = tune(),
+random_forest <- rand_forest(mtry = tune(), # Tune metry and min_n and keep trees at 1000
                               min_n = tune(),
                               trees = 1000) %>% # Type of Model
-  set_engine("ranger") %>% # What R function to use
-  set_mode("regression")
+  set_engine("ranger") %>% # Use ranger function
+  set_mode("regression") # Regression bc target variable is quantitative
 
-# Workflow
+# Set Up Workflow
 wf <- workflow() %>% 
   add_recipe(rec) %>%
   add_model(random_forest) %>%
@@ -822,7 +830,7 @@ tg <- grid_regular(mtry(range = c(1, 13)),
                             levels = 10)
 
 # Split data for cross-validation (CV)
-folds <- vfold_cv(full_train, v = 5, repeats = 1)
+folds <- vfold_cv(full_train, v = 5, repeats = 1) # 5 folds for CV
 
 # Run cross-validation
 cv_results <- wf %>%
@@ -830,7 +838,7 @@ cv_results <- wf %>%
             grid = tg,
             metrics = metric_set(rmse))
 
-# Find best tuning parameters
+# Find best tuning parameters to minimize RMSE
 best_tune <- cv_results %>%
   select_best("rmse")
 # mtry = 13, min_n = 10
@@ -848,7 +856,9 @@ predictions <- bind_cols(full_test$Id,
     rename("Id" = "...1", "Prediction" = ".pred")# Rename columns
 
 # Write Predictions to .csv
-vroom_write(x=predictions, file="random_forest_2_predictions.csv", delim = ",")
+# vroom_write(x=predictions, file="random_forest_2_predictions.csv", delim = ",")
+
+
 
 
 
@@ -906,13 +916,13 @@ head(baked)
 ##### Modeling
 
 # Set up model
-random_forest <- rand_forest(mtry = tune(),
+random_forest <- rand_forest(mtry = tune(), # Tune mtry and min_n and use 1000 trees
                               min_n = tune(),
                               trees = 1000) %>% # Type of Model
-  set_engine("ranger") %>% # What R function to use
-  set_mode("regression")
+  set_engine("ranger") %>% # Use ranger function
+  set_mode("regression") # Regression bc target variable is quantitative
 
-# Workflow
+# Set Up Workflow
 wf <- workflow() %>% 
   add_recipe(rec) %>%
   add_model(random_forest) %>%
@@ -924,7 +934,7 @@ tg <- grid_regular(mtry(range = c(1, 10)),
                             levels = 10)
 
 # Split data for cross-validation (CV)
-folds <- vfold_cv(full_train, v = 5, repeats = 1)
+folds <- vfold_cv(full_train, v = 5, repeats = 1) # 5 folds for CV
 
 # Run cross-validation
 cv_results <- wf %>%
@@ -932,7 +942,7 @@ cv_results <- wf %>%
             grid = tg,
             metrics = metric_set(rmse))
 
-# Find best tuning parameters
+# Find best tuning parameters to minimize RMSE
 best_tune <- cv_results %>%
   select_best("rmse")
 # mtry = 4; min_n = 60
@@ -950,7 +960,8 @@ predictions <- bind_cols(full_test$Id,
     rename("Id" = "...1", "Prediction" = ".pred")# Rename columns
 
 # Write Predictions to .csv
-vroom_write(x=predictions, file="random_forest_3_predictions.csv", delim = ",")
+# vroom_write(x=predictions, file="random_forest_3_predictions.csv", delim = ",")
+
 
 
 
@@ -996,9 +1007,9 @@ rec <- recipe(revenue ~ ., data = full_train) %>%
   step_normalize(all_numeric_predictors()) %>%
   # Remove zero-variance variables
   step_zv()%>%
-  # Remove correlated features
+  # Remove correlated features (>.85)
   step_corr(all_numeric_predictors(), threshold = 0.85) %>%
-  # PCR Threshold = .90
+  # PCR Threshold = .85
   step_pca(all_numeric_predictors(), threshold = .85)
                  
 # Prep, Bake, and View Recipe
@@ -1009,13 +1020,13 @@ head(baked)
 ##### Modeling
 
 # Set up model
-random_forest <- rand_forest(mtry = tune(),
+random_forest <- rand_forest(mtry = tune(), # Tune mtry and min_n; Keep trees at 1000
                               min_n = tune(),
                               trees = 1000) %>% # Type of Model
-  set_engine("ranger") %>% # What R function to use
-  set_mode("regression")
+  set_engine("ranger") %>% # Use ranger function
+  set_mode("regression") # Regression bc target variable is quantitative
 
-# Workflow
+# Set Up Workflow
 wf <- workflow() %>% 
   add_recipe(rec) %>%
   add_model(random_forest) %>%
@@ -1027,7 +1038,7 @@ tg <- grid_regular(mtry(range = c(1, 13)),
                             levels = 13)
 
 # Split data for cross-validation (CV)
-folds <- vfold_cv(full_train, v = 5, repeats = 1)
+folds <- vfold_cv(full_train, v = 5, repeats = 1) # 5 Folds fo CV
 
 # Run cross-validation
 cv_results <- wf %>%
@@ -1035,7 +1046,7 @@ cv_results <- wf %>%
             grid = tg,
             metrics = metric_set(rmse))
 
-# Find best tuning parameters
+# Find best tuning parameters to minimize RMSE
 best_tune <- cv_results %>%
   select_best("rmse")
 # mtry = 3, min_n = 100
@@ -1053,7 +1064,8 @@ predictions <- bind_cols(full_test$Id,
     rename("Id" = "...1", "Prediction" = ".pred")# Rename columns
 
 # Write Predictions to .csv
-vroom_write(x=predictions, file="random_forest_4_predictions.csv", delim = ",")
+# vroom_write(x=predictions, file="random_forest_4_predictions.csv", delim = ",")
+
 
 
 
@@ -1108,13 +1120,13 @@ head(baked)
 ##### Modeling
 
 # Set up model
-random_forest <- rand_forest(mtry = tune(),
+random_forest <- rand_forest(mtry = tune(), # Tune mtry and min_n and set trees to 1000
                               min_n = tune(),
                               trees = 1000) %>% # Type of Model
-  set_engine("ranger") %>% # What R function to use
-  set_mode("regression")
+  set_engine("ranger") %>% # Use ranger function
+  set_mode("regression") # Regression bc target variable is quantitative
 
-# Workflow
+# Set Up Workflow
 wf <- workflow() %>% 
   add_recipe(rec) %>%
   add_model(random_forest) %>%
@@ -1126,7 +1138,7 @@ tg <- grid_regular(mtry(range = c(1, 20)),
                             levels = 20)
 
 # Split data for cross-validation (CV)
-folds <- vfold_cv(full_train, v = 5, repeats = 1)
+folds <- vfold_cv(full_train, v = 5, repeats = 1) # 5 folds fo CV
 
 # Run cross-validation
 cv_results <- wf %>%
@@ -1134,7 +1146,7 @@ cv_results <- wf %>%
             grid = tg,
             metrics = metric_set(rmse))
 
-# Find best tuning parameters
+# Find best tuning parameters to minimize RMSE
 best_tune <- cv_results %>%
   select_best("rmse")
 # mtry = 3, min_n = 100
@@ -1152,7 +1164,7 @@ predictions <- bind_cols(full_test$Id,
     rename("Id" = "...1", "Prediction" = ".pred")# Rename columns
 
 # Write Predictions to .csv
-vroom_write(x=predictions, file="random_forest_5_predictions.csv", delim = ",")
+# vroom_write(x=predictions, file="random_forest_5_predictions.csv", delim = ",")
 
 
 
@@ -1193,13 +1205,13 @@ head(baked, 3)
 ##### Modeling
 
 # Set up model
-random_forest <- rand_forest(mtry = tune(),
+random_forest <- rand_forest(mtry = tune(), # Tune mtry and min_n; Set trees at 1000
                               min_n = tune(),
                               trees = 1000) %>% # Type of Model
-  set_engine("ranger") %>% # What R function to use
-  set_mode("regression")
+  set_engine("ranger") %>% # Use ranger function
+  set_mode("regression") # Regression bc target variable is quantitative
 
-# Workflow
+# Set Up Workflow
 wf <- workflow() %>% 
   add_recipe(rec) %>%
   add_model(random_forest) %>%
@@ -1211,7 +1223,7 @@ tg <- grid_regular(mtry(range = c(1, 13)),
                             levels = 5)
 
 # Split data for cross-validation (CV)
-folds <- vfold_cv(full_train, v = 5, repeats = 1)
+folds <- vfold_cv(full_train, v = 5, repeats = 1) # 5 folds for CV
 
 # Run cross-validation
 cv_results <- wf %>%
@@ -1219,7 +1231,7 @@ cv_results <- wf %>%
             grid = tg,
             metrics = metric_set(rmse))
 
-# Find best tuning parameters
+# Find best tuning parameters to minimize RMSE
 best_tune <- cv_results %>%
   select_best("rmse")
 
@@ -1236,6 +1248,6 @@ predictions <- bind_cols(full_test$Id,
     rename("Id" = "...1", "Prediction" = ".pred")# Rename columns
 
 # Write Predictions to .csv
-vroom_write(x=predictions, file="random_forest_6_predictions.csv", delim = ",")
+# vroom_write(x=predictions, file="random_forest_6_predictions.csv", delim = ",")
 
 
